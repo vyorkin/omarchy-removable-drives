@@ -24,6 +24,35 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // The drive watcher is a shell service, not a child of this widget. Omarchy
+  // builds a bar per monitor, so a Service left here would run once per screen:
+  // two udev streams, and two of every "drive connected" notification. It is
+  // instantiated once by the host and shared by every monitor's bar.
+  property var drives: null
+
+  function bindService() {
+    if (drives) return
+    var host = bar && bar.shell ? bar.shell : null
+    if (!host || typeof host.serviceFor !== "function") return
+    var service = host.serviceFor("wian47.removable-drives")
+    if (!service) return
+    drives = service
+    drives.settings = root.settings
+  }
+
+  onBarChanged: bindService()
+  onSettingsChanged: if (drives) drives.settings = root.settings
+  Component.onCompleted: bindService()
+
+  // The service may be created a beat after the bar is built, so keep trying
+  // until it exists rather than depending on host ordering.
+  Timer {
+    interval: 200
+    running: drives === null
+    repeat: true
+    onTriggered: root.bindService()
+  }
+
   readonly property bool alwaysShow: setting("alwaysShow", false) === true
   readonly property bool openOnMount: setting("openOnMount", true) === true
 
@@ -34,7 +63,7 @@ Panel {
   readonly property int barSize: bar ? bar.barSize : Style.bar.sizeHorizontal
   readonly property string labelMode: vertical ? "none" : String(setting("barLabel", "none"))
   readonly property string barLabel: Model.barLabelText(devices, labelMode)
-  readonly property string barTooltip: drives.anyBusy
+  readonly property string barTooltip: (drives && drives.anyBusy)
     ? (Model.formatRate(drives.totalWriteRate) !== ""
         ? "Writing " + Model.formatRate(drives.totalWriteRate) + " — do not remove"
         : "Busy — do not remove")
@@ -63,8 +92,8 @@ Panel {
   property string formatType: ""
   property bool formatQuick: true
 
-  readonly property var devices: drives.devices
-  readonly property var rows: Model.navRows(drives.devices, drives.portables)
+  readonly property var devices: drives ? drives.devices : []
+  readonly property var rows: Model.navRows(drives ? drives.devices : [], drives ? drives.portables : [])
   property int cursor: 0
   property bool cursorActive: false
   property Item cursorItem: null
@@ -251,7 +280,8 @@ Panel {
     Qt.callLater(function() { scrollItemIntoView(root.cursorItem) })
   }
 
-  visible: devices.length > 0 || drives.portables.length > 0 || drives.supportHint !== null || alwaysShow
+  visible: devices.length > 0 || (drives ? drives.portables.length > 0 : false)
+    || (drives ? drives.supportHint !== null : false) || alwaysShow
   implicitWidth: button.item ? button.item.implicitWidth : 0
   implicitHeight: button.item ? button.item.implicitHeight : barSize
 
@@ -302,11 +332,6 @@ Panel {
       drives.refreshPortables()
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
     }
-  }
-
-  Service {
-    id: drives
-    settings: root.settings
   }
 
   IpcHandler {
